@@ -1,0 +1,7 @@
+LIBRARY    "SMSAddIn.dll"
+
+EXPORTS
+GetClassObject
+DestroyObject
+GetClassNames
+
