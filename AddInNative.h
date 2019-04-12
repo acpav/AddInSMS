@@ -13,7 +13,10 @@
 #include <string>
 #include <sstream>
 #include <iostream>
-
+#include <rapidxml/rapidxml.hpp>
+#include <rapidjson/writer.h>
+#include <rapidjson/reader.h>
+#include <rapidjson/stringbuffer.h>
 ///////////////////////////////////////////////////////////////////////////////
 
 struct RequestStatus {
@@ -37,6 +40,28 @@ struct RequestStatus {
 		status = 0;
 		exstatus = 0;
 	}
+};
+
+struct MyHandler {
+	const char* type;
+	std::string data;
+	
+	MyHandler() : type(), data() {}
+
+	bool Null() { type = "Null"; data.clear(); return true; }
+	bool Bool(bool b) { type = "Bool:"; data = b ? "true" : "false"; return true; }
+	bool Int(int i) { type = "Int:"; data = std::to_string(i); return true; }
+	bool Uint(unsigned u) { type = "Uint:"; data = std::to_string(u); return true; }
+	bool Int64(int64_t i) { type = "Int64:"; data = std::to_string(i); return true; }
+	bool Uint64(uint64_t u) { type = "Uint64:"; data = std::to_string(u); return true; }
+	bool Double(double d) { type = "Double:"; data = std::to_string(d); return true; }
+	bool RawNumber(const char* str, size_t length, bool) { type = "Number:"; data = std::string(str, length); return true; }
+	bool String(const char* str, size_t length, bool) { type = "String:"; data = std::string(str, length); return true; }
+	bool StartObject() { type = "StartObject"; data.clear(); return true; }
+	bool Key(const char* str, size_t length, bool) { type = "Key:"; data = std::string(str, length); return true; }
+	bool EndObject(size_t memberCount) { type = "EndObject:"; data = std::to_string(memberCount); return true; }
+	bool StartArray() { type = "StartArray"; data.clear(); return true; }
+	bool EndArray(size_t elementCount) { type = "EndArray:"; data = std::to_string(elementCount); return true; }
 };
 
 // class CAddInNative
@@ -65,6 +90,7 @@ public:
     {
 		eMethSendSMS,
 		eMethGetDeliveryStatus,
+		eMethGetShortLink,
         eLastMethod      // Always last
     };
 
@@ -114,6 +140,7 @@ private:
 
 	bool GetDeliveryStatus(const wchar_t*, tVariant*);
 	bool SendSMS(const wchar_t* number, const wchar_t* message, bool Resend, tVariant*);
+	bool GetShortLink(const wchar_t*, tVariant*);
 
 	void ParseRequestStatus(char *);
 	void ParseRequestStatusXML(char *);

@@ -10,7 +10,6 @@
 #include <wchar.h>
 #include <clocale>
 #include "AddInNative.h"
-#include <rapidxml/rapidxml.hpp>
 
 using namespace rapidxml;
 
@@ -23,12 +22,14 @@ static const wchar_t g_kClassNames[] = L"SMSAddIn";
 
 static const wchar_t *g_MethodNamesRu[] = {
 										L"ОтправитьСМС",
-										L"ПолучитьСтатусДоставки"
+										L"ПолучитьСтатусДоставки",
+										L"ПолучитьКороткуюСсылку"
 };
 
 static const wchar_t *g_MethodNames[] = {
 										L"SendSMS",
-										L"GetDeliveryStatus"
+										L"GetDeliveryStatus",
+										L"GetShortLink"
 };
 
 static const wchar_t *g_PropNamesRu[] = {
@@ -402,6 +403,7 @@ long SMSAddIn::GetNParams(const long lMethodNum)
 	switch (lMethodNum)
 	{
 	case eMethGetDeliveryStatus:
+	case eMethGetShortLink:
 		rez = 1;
 		break;
 	case eMethSendSMS:
@@ -426,6 +428,7 @@ bool SMSAddIn::HasRetVal(const long lMethodNum)
 	{
 	case eMethGetDeliveryStatus:
 	case eMethSendSMS:
+	case eMethGetShortLink:
 		return true;
 		break;
 	default:
@@ -459,6 +462,10 @@ bool SMSAddIn::CallAsFunc(const long lMethodNum,
 	case eMethGetDeliveryStatus:
 		if (TV_VT(paParams) == VTYPE_PWSTR && paParams[0].wstrLen > 0)
 			rez = GetDeliveryStatus(TV_WSTR(paParams), pvarRetValue);
+		break;
+	case eMethGetShortLink:
+		if (TV_VT(paParams) == VTYPE_PWSTR && paParams[0].wstrLen > 0)
+			rez = GetShortLink(TV_WSTR(paParams), pvarRetValue);
 		break;
 	case eMethSendSMS:
 		if (lSizeArray == 3
@@ -599,9 +606,11 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 			append(L"&message=").append(message).
 			append(L"&clientId=").append(number).
 			append(L"&v_resendCond=").append(Resend ? L"S" : L"N").
+			append(L"&i_resendCond=Y&s_resendCond=Y&v_resendValid=000000020000000R&i_resendValid=000000010000000R").
 			append(L"&sn=").append(sn);
 		break;
 	default:
+		free(chunk.memory);
 		return false;
 		break;
 	}
@@ -610,12 +619,12 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 
 	size_t len = wcstombs(NULL, wstr.c_str(), 0);
 	if (len <= 0) return false;
-	char* str = (char*)_alloca(len + 1);
+	char* str = (char*)malloc(len + 1);
 	wcstombs(str, wstr.c_str(), len + 1);
 
 	size_t lenUrl = wcstombs(NULL, url.c_str(), 0);
 	if (lenUrl <= 0) return false;
-	char* strUrl = (char*)_alloca(lenUrl + 1);
+	char* strUrl = (char*)malloc(lenUrl + 1);
 	wcstombs(strUrl, url.c_str(), lenUrl + 1);
 
 	if (curl)
@@ -652,7 +661,6 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 		ParseRequestCodeVK(chunk.memory);
 		break;
 	default:
-		return false;
 		break;
 	}
 	else
@@ -667,6 +675,115 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 		memcpy((void*)rez->pstrVal, (void*)rs.code.c_str(), rs.code.length() * sizeof(char));
 		rez->strLen = rs.code.length();
 	}
+
+	free(chunk.memory);
+	free(str);
+	free(strUrl);
+
+	return true;
+}
+
+bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
+{
+	rs.clear();
+
+	if (url.empty() || !curl)
+	{
+		rs.code = "901";
+		rs.sourceText = "Не установлены параметры";
+		return true;
+	}
+
+	CURLcode res;
+	struct MemoryStruct chunk;
+	chunk.memory = (char*)malloc(1);
+	chunk.size = 0;
+
+	std::setlocale(LC_ALL, "ru_RU.utf8");
+
+	size_t lenUrl = wcstombs(NULL, url.c_str(), 0);
+	if (lenUrl <= 0) return false;
+	char* strUrl = (char*)malloc(lenUrl + 1);
+	wcstombs(strUrl, url.c_str(), lenUrl + 1);
+
+	size_t len = wcstombs(NULL, longUrl, 0);
+	if (len <= 0) return false;
+	char* str = (char*)malloc(len + 1);
+	wcstombs(str, longUrl, len + 1);
+
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> json(s);
+
+	json.StartObject();
+	
+	json.Key("longDynamicLink");
+	json.String(str);
+	
+	json.Key("suffix");
+	json.StartObject();
+	json.Key("option");
+	json.String("SHORT");
+	json.EndObject();
+
+	json.EndObject();
+
+	long response_code = 0;
+
+	if (curl) {
+
+		curl_easy_setopt(curl, CURLOPT_URL, strUrl);
+
+		struct curl_slist *headers = NULL;
+		headers = curl_slist_append(headers, "Accept: application/json");
+		headers = curl_slist_append(headers, "Content-Type: application/json");
+		headers = curl_slist_append(headers, "charsets: utf-8");
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+		if ((int)url.find(L"https") == 0)
+		{
+			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+		}
+
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, s.GetString());
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, s.GetLength());
+
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
+
+		res = curl_easy_perform(curl);
+		if (res != CURLE_OK)
+			rs.sourceText = curl_easy_strerror(res);
+		else
+		{
+			rs.sourceText = chunk.memory;
+			curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+			rs.code = std::to_string(response_code);
+		}
+	}
+
+	MyHandler handler;
+	rapidjson::Reader reader;
+	rapidjson::StringStream ss(chunk.memory);
+	reader.IterativeParseInit();
+	bool flag = false;
+	while (!reader.IterativeParseComplete()) {
+		reader.IterativeParseNext<rapidjson::kParseDefaultFlags>(ss, handler);
+		if (flag)
+		{
+			if (handler.data.length() > 0)
+				rs.text = handler.data;
+			break;
+		}
+		if (strcmp(handler.type, "Key:") == 0 && handler.data.compare("shortLink") == 0) flag = true;
+	}
+
+	TV_VT(rez) = VTYPE_I8;
+	TV_I8(rez) = response_code;
+
+	free(chunk.memory);
+	free(str);
+	free(strUrl);
 
 	return true;
 }
@@ -713,6 +830,7 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 		wstr.append(L"serviceid=").append(login).append(L"&pass=").append(password).append(L"&id=").append(message);
 		break;
 	default:
+		free(chunk.memory);
 		return false;
 		break;
 	}
@@ -721,12 +839,12 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 
 	size_t len = wcstombs(NULL, wstr.c_str(), 0);
 	if (len <= 0) return false;
-	char* str = (char*)_alloca(len + 1);
+	char* str = (char*)malloc(len + 1);
 	wcstombs(str, wstr.c_str(), len + 1);
 
 	size_t lenUrl = wcstombs(NULL, url.c_str(), 0);
 	if (lenUrl <= 0) return false;
-	char* strUrl = (char*)_alloca(lenUrl + 1);
+	char* strUrl = (char*)malloc(lenUrl + 1);
 	wcstombs(strUrl, url.c_str(), lenUrl + 1);
 
 	if (curl) {
@@ -759,7 +877,6 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 		ParseRequestStatusXML(chunk.memory);
 		break;
 	default:
-		return false;
 		break;
 	}
 	else
@@ -774,6 +891,10 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 		memcpy((void*)rez->pstrVal, (void*)rs.code.c_str(), rs.code.length() * sizeof(char));
 		rez->strLen = rs.code.length();
 	}
+
+	free(chunk.memory);
+	free(str);
+	free(strUrl);
 
 	return true;
 }
