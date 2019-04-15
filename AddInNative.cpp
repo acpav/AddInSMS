@@ -68,7 +68,7 @@ uint32_t convToShortWchar(WCHAR_T** Dest, const wchar_t* Source, uint32_t len = 
 uint32_t convFromShortWchar(wchar_t** Dest, const WCHAR_T* Source, uint32_t len = 0);
 uint32_t getLenShortWcharStr(const WCHAR_T* Source);
 static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
-
+char* convWcharToChar(size_t *len, const wchar_t* wstr);
 //---------------------------------------------------------------------------//
 long GetClassObject(const wchar_t* wsName, IComponentBase** pInterface)
 {
@@ -441,14 +441,14 @@ bool SMSAddIn::HasRetVal(const long lMethodNum)
 bool SMSAddIn::CallAsProc(const long lMethodNum,
                     tVariant* paParams, const long lSizeArray)
 { 
-	bool rez = true;
-	switch (lMethodNum)
-	{
+	bool rez = false;
+	//switch (lMethodNum)
+	//{
 
-	default:
-		rez = false;
-		break;
-	}
+	//default:
+	//	rez = false;
+	//	break;
+	//}
 	return rez;
 }
 //---------------------------------------------------------------------------//
@@ -606,7 +606,7 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 			append(L"&message=").append(message).
 			append(L"&clientId=").append(number).
 			append(L"&v_resendCond=").append(Resend ? L"S" : L"N").
-			append(L"&i_resendCond=Y&s_resendCond=Y&v_resendValid=000000020000000R&i_resendValid=000000010000000R").
+			append(L"&i_resendCond=Y&s_resendCond=Y&v_resendValid=000000020000000R&i_resendValid=000000020000000R").
 			append(L"&sn=").append(sn);
 		break;
 	default:
@@ -617,38 +617,29 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 
 	std::setlocale(LC_ALL, "ru_RU.utf8");
 
-	size_t len = wcstombs(NULL, wstr.c_str(), 0);
-	if (len <= 0) return false;
-	char* str = (char*)malloc(len + 1);
-	wcstombs(str, wstr.c_str(), len + 1);
+	size_t len = 0, lenUrl = 0;
+	char* str = convWcharToChar(&len, wstr.c_str());
+	char* strUrl = convWcharToChar(&lenUrl, url.c_str());
 
-	size_t lenUrl = wcstombs(NULL, url.c_str(), 0);
-	if (lenUrl <= 0) return false;
-	char* strUrl = (char*)malloc(lenUrl + 1);
-	wcstombs(strUrl, url.c_str(), lenUrl + 1);
+	curl_easy_setopt(curl, CURLOPT_URL, strUrl);
 
-	if (curl)
+	if ((int)url.find(L"https") == 0)
 	{
-		curl_easy_setopt(curl, CURLOPT_URL, strUrl);
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+	}
 
-		if ((int)url.find(L"https") == 0)
-		{
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-		}
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, str);
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len);
 
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, str);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
 
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-
-		res = curl_easy_perform(curl);
-		if (res != CURLE_OK)
-		{
-			rs.sourceText = curl_easy_strerror(res);
-			rs.text = rs.sourceText;
-		}
+	res = curl_easy_perform(curl);
+	if (res != CURLE_OK)
+	{
+		rs.sourceText = curl_easy_strerror(res);
+		rs.text = rs.sourceText;
 	}
 
 	if (chunk.size > 0)
@@ -701,15 +692,9 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 
 	std::setlocale(LC_ALL, "ru_RU.utf8");
 
-	size_t lenUrl = wcstombs(NULL, url.c_str(), 0);
-	if (lenUrl <= 0) return false;
-	char* strUrl = (char*)malloc(lenUrl + 1);
-	wcstombs(strUrl, url.c_str(), lenUrl + 1);
-
-	size_t len = wcstombs(NULL, longUrl, 0);
-	if (len <= 0) return false;
-	char* str = (char*)malloc(len + 1);
-	wcstombs(str, longUrl, len + 1);
+	size_t len = 0, lenUrl = 0;
+	char* str = convWcharToChar(&len, longUrl);
+	char* strUrl = convWcharToChar(&lenUrl, url.c_str());
 
 	rapidjson::StringBuffer s;
 	rapidjson::Writer<rapidjson::StringBuffer> json(s);
@@ -723,43 +708,41 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 	json.StartObject();
 	json.Key("option");
 	json.String("SHORT");
+	//json.String("UNGUESSABLE");
 	json.EndObject();
 
 	json.EndObject();
 
 	long response_code = 0;
 
-	if (curl) {
+	curl_easy_setopt(curl, CURLOPT_URL, strUrl);
 
-		curl_easy_setopt(curl, CURLOPT_URL, strUrl);
+	struct curl_slist *headers = NULL;
+	headers = curl_slist_append(headers, "Accept: application/json");
+	headers = curl_slist_append(headers, "Content-Type: application/json");
+	headers = curl_slist_append(headers, "charsets: utf-8");
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-		struct curl_slist *headers = NULL;
-		headers = curl_slist_append(headers, "Accept: application/json");
-		headers = curl_slist_append(headers, "Content-Type: application/json");
-		headers = curl_slist_append(headers, "charsets: utf-8");
-		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	if ((int)url.find(L"https") == 0)
+	{
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+	}
 
-		if ((int)url.find(L"https") == 0)
-		{
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-		}
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, s.GetString());
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, s.GetLength());
 
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, s.GetString());
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, s.GetLength());
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
 
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-
-		res = curl_easy_perform(curl);
-		if (res != CURLE_OK)
-			rs.sourceText = curl_easy_strerror(res);
-		else
-		{
-			rs.sourceText = chunk.memory;
-			curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-			rs.code = std::to_string(response_code);
-		}
+	res = curl_easy_perform(curl);
+	if (res != CURLE_OK)
+		rs.sourceText = curl_easy_strerror(res);
+	else
+	{
+		rs.sourceText = chunk.memory;
+		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+		rs.code = std::to_string(response_code);
 	}
 
 	MyHandler handler;
@@ -837,35 +820,27 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 
 	std::setlocale(LC_ALL, "ru_RU.utf8");
 
-	size_t len = wcstombs(NULL, wstr.c_str(), 0);
-	if (len <= 0) return false;
-	char* str = (char*)malloc(len + 1);
-	wcstombs(str, wstr.c_str(), len + 1);
+	size_t len = 0, lenUrl = 0;
+	char* str = convWcharToChar(&len, wstr.c_str());
+	char* strUrl = convWcharToChar(&lenUrl, url.c_str());
 
-	size_t lenUrl = wcstombs(NULL, url.c_str(), 0);
-	if (lenUrl <= 0) return false;
-	char* strUrl = (char*)malloc(lenUrl + 1);
-	wcstombs(strUrl, url.c_str(), lenUrl + 1);
+	curl_easy_setopt(curl, CURLOPT_URL, strUrl);
 
-	if (curl) {
-		curl_easy_setopt(curl, CURLOPT_URL, strUrl);
-
-		if ((int)url.find(L"https") == 0)
-		{
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-		}
-
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, str);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len);
-
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-
-		res = curl_easy_perform(curl);
-		if (res != CURLE_OK)
-			rs.sourceText = curl_easy_strerror(res);
+	if ((int)url.find(L"https") == 0)
+	{
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 	}
+
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, str);
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len);
+
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
+
+	res = curl_easy_perform(curl);
+	if (res != CURLE_OK)
+		rs.sourceText = curl_easy_strerror(res);
 
 	if (chunk.size > 0)
 	switch (ApiVersion)
@@ -964,7 +939,7 @@ void SMSAddIn::ParseRequestStatusXML(char *message)
 			rs.messageType = attr->value();
 		}
 	}
-	catch (int ex)
+	catch (int)
 	{
 		rs.code = "905";
 	}
@@ -1053,4 +1028,14 @@ static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, voi
 	mem->memory[mem->size] = 0;
 
 	return realsize;
+}
+
+char* convWcharToChar(size_t *len, const wchar_t* wstr)
+{
+	wcstombs_s(len, NULL, 0, wstr, 0);
+	if (len[0] <= 0) return false;
+	char* str = (char*)malloc(len[0] + 1);
+	wcstombs_s(NULL, str, len[0] + 1, wstr, len[0] + 1);
+
+	return str;
 }
