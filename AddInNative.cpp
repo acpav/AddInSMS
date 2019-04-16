@@ -45,7 +45,8 @@ static const wchar_t *g_PropNamesRu[] = {
 	L"ВерсияAPI",
 	L"Подпись",
 	L"ИД",
-	L"ДополнительныйСтатус"
+	L"ДополнительныйСтатус",
+	L"ПорядокОтправки"
 };
 
 static const wchar_t *g_PropNames[] = {
@@ -61,7 +62,8 @@ static const wchar_t *g_PropNames[] = {
 	L"ApiVersion",
 	L"SN",
 	L"ID",
-	L"ExtendedStatus"
+	L"ExtendedStatus",
+	L"OrderList"
 };
 
 uint32_t convToShortWchar(WCHAR_T** Dest, const wchar_t* Source, uint32_t len = 0);
@@ -106,6 +108,7 @@ SMSAddIn::SMSAddIn()
 	url = L"";
 	login = L"";
 	password = L"";
+	orderList = L"V,S";
 	rs.clear();
 	ApiVersion = 1;
 	curl_global_init(CURL_GLOBAL_ALL);
@@ -225,6 +228,9 @@ bool SMSAddIn::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 	case ePropPassword:
 		wStr = &password;
 		break;
+	case ePropOrderList:
+		wStr = &orderList;
+		break;
 	case ePropReqDate:
 		Str = &rs.date;
 		break;
@@ -296,6 +302,11 @@ bool SMSAddIn::SetPropVal(const long lPropNum, tVariant* varPropVal)
 			return false;
 		password = TV_WSTR(varPropVal);
 		break;
+	case ePropOrderList:
+		if (TV_VT(varPropVal) != VTYPE_PWSTR)
+			return false;
+		orderList = TV_WSTR(varPropVal);
+		break;
 	case ePropSN:
 		if (TV_VT(varPropVal) != VTYPE_PWSTR)
 			return false;
@@ -335,6 +346,7 @@ bool SMSAddIn::IsPropWritable(const long lPropNum)
 	case ePropPassword:
 	case ePropApiVersion:
 	case ePropSN:
+	case ePropOrderList:
 		return true;
 	default:
 		return false;
@@ -577,7 +589,7 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 {
 	rs.clear();
 
-	if (url.empty() || sn.empty() || !curl || ((login.empty() || password.empty()) && ApiVersion == 2))
+	if (url.empty() || sn.empty() || !curl || ((login.empty() || password.empty() || orderList.empty()) && ApiVersion == 2))
 	{
 		rs.code = "901";
 		rs.sourceText = "Не установлены параметры";
@@ -601,12 +613,13 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 			append(L"&message=").append(message);
 		break;
 	case 2: //Отправка вконтакте, вайбер и СМС
-		wstr.append(L"order_list=V,I,S&serviceid=").append(login).
+		wstr.append(L"order_list=").append(orderList).
+			append(L"&serviceid=").append(login).
 			append(L"&pass=").append(password).
 			append(L"&message=").append(message).
 			append(L"&clientId=").append(number).
 			append(L"&v_resendCond=").append(Resend ? L"S" : L"N").
-			append(L"&i_resendCond=Y&s_resendCond=Y&v_resendValid=000000020000000R&i_resendValid=000000020000000R").
+			append(L"&i_resendCond=Y&v_resendValid=000000020000000R&i_resendValid=000000020000000R").
 			append(L"&sn=").append(sn);
 		break;
 	default:

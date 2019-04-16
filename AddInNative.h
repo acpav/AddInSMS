@@ -83,6 +83,7 @@ public:
 		ePropSN,
 		ePropID,
 		ePropReqExStatus,
+		ePropOrderList,
         eLastProp      // Always last
     };
 
@@ -134,7 +135,7 @@ private:
 	IAddInDefBase      *m_iConnect;
 	IMemoryManager     *m_iMemory;
 
-	std::wstring url, login, password, sn;
+	std::wstring url, login, password, sn, orderList;
 	RequestStatus rs;
 	int ApiVersion;
 
