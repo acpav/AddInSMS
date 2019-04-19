@@ -6,6 +6,8 @@
 #include <wtypes.h>
 #endif //__linux__
 
+constexpr size_t MAX_COUNT_THREAD = 100;
+
 #include "ComponentBase.h"
 #include "AddInDefBase.h"
 #include "IMemoryManager.h"
@@ -62,6 +64,11 @@ struct MyHandler {
 	bool EndObject(size_t memberCount) { type = "EndObject:"; data = std::to_string(memberCount); return true; }
 	bool StartArray() { type = "StartArray"; data.clear(); return true; }
 	bool EndArray(size_t elementCount) { type = "EndArray:"; data = std::to_string(elementCount); return true; }
+};
+
+struct MemoryStruct {
+	char* memory;
+	size_t size;
 };
 
 // class CAddInNative
@@ -130,6 +137,7 @@ private:
 	long findName(const wchar_t* names[], const wchar_t* name, const uint32_t size) const;
 	
 	CURL *curl;
+	CURL* mcurl[MAX_COUNT_THREAD];
 
     // Attributes
 	IAddInDefBase      *m_iConnect;
@@ -148,5 +156,12 @@ private:
 
 	void ParseRequestCode(char *);
 	void ParseRequestCodeVK(char *);
+
+	std::string ParseRequestShortLink(MemoryStruct);
+	void ParseRequestMShortLink(const MemoryStruct*, std::string[], size_t);
+	size_t ParseJsonLongLink(const char * jsonStr, std::string * mStr);
+
+	std::string GetJsonShortLink(const char* url);
+
 };
 #endif //__ADDINNATIVE_H__

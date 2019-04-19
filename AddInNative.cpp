@@ -11,12 +11,11 @@
 #include <clocale>
 #include "AddInNative.h"
 
-using namespace rapidxml;
-
-struct MemoryStruct {
-	char *memory;
-	size_t size;
-};
+uint32_t convToShortWchar(WCHAR_T** Dest, const wchar_t* Source, uint32_t len = 0);
+uint32_t convFromShortWchar(wchar_t** Dest, const WCHAR_T* Source, uint32_t len = 0);
+uint32_t getLenShortWcharStr(const WCHAR_T* Source);
+static size_t WriteMemoryCallback(void* contents, size_t size, size_t nmemb, void* userp);
+char* convWcharToChar(size_t* len, const wchar_t* wstr);
 
 static const wchar_t g_kClassNames[] = L"SMSAddIn";
 
@@ -66,11 +65,6 @@ static const wchar_t *g_PropNames[] = {
 	L"OrderList"
 };
 
-uint32_t convToShortWchar(WCHAR_T** Dest, const wchar_t* Source, uint32_t len = 0);
-uint32_t convFromShortWchar(wchar_t** Dest, const WCHAR_T* Source, uint32_t len = 0);
-uint32_t getLenShortWcharStr(const WCHAR_T* Source);
-static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
-char* convWcharToChar(size_t *len, const wchar_t* wstr);
 //---------------------------------------------------------------------------//
 long GetClassObject(const wchar_t* wsName, IComponentBase** pInterface)
 {
@@ -113,11 +107,20 @@ SMSAddIn::SMSAddIn()
 	ApiVersion = 1;
 	curl_global_init(CURL_GLOBAL_ALL);
 	curl = curl_easy_init();
+
+	for (size_t i = 0; i < MAX_COUNT_THREAD; ++i)
+	{
+		mcurl[i] = curl_easy_init();
+	}
 }
 //---------------------------------------------------------------------------//
 SMSAddIn::~SMSAddIn()
 {
 	if (curl) curl_easy_cleanup(curl);
+	for (size_t i = 0; i < MAX_COUNT_THREAD; ++i)
+	{
+		if (mcurl[i]) curl_easy_cleanup(mcurl[i]);
+	}
 	curl_global_cleanup();
 }
 //---------------------------------------------------------------------------//
@@ -691,93 +694,117 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 {
 	rs.clear();
 
-	if (url.empty() || !curl)
+	if (url.empty())
 	{
 		rs.code = "901";
 		rs.sourceText = "Не установлены параметры";
 		return true;
 	}
 
-	CURLcode res;
-	struct MemoryStruct chunk;
-	chunk.memory = (char*)malloc(1);
-	chunk.size = 0;
-
 	std::setlocale(LC_ALL, "ru_RU.utf8");
 
-	size_t len = 0, lenUrl = 0;
+	size_t len = 0 , lenUrl = 0;
 	char* str = convWcharToChar(&len, longUrl);
 	char* strUrl = convWcharToChar(&lenUrl, url.c_str());
 
-	rapidjson::StringBuffer s;
-	rapidjson::Writer<rapidjson::StringBuffer> json(s);
+	long response_code = 200;
 
-	json.StartObject();
-	
-	json.Key("longDynamicLink");
-	json.String(str);
-	
-	json.Key("suffix");
-	json.StartObject();
-	json.Key("option");
-	json.String("SHORT");
-	//json.String("UNGUESSABLE");
-	json.EndObject();
-
-	json.EndObject();
-
-	long response_code = 0;
-
-	curl_easy_setopt(curl, CURLOPT_URL, strUrl);
-
-	struct curl_slist *headers = NULL;
+	struct curl_slist* headers = NULL;
 	headers = curl_slist_append(headers, "Accept: application/json");
 	headers = curl_slist_append(headers, "Content-Type: application/json");
 	headers = curl_slist_append(headers, "charsets: utf-8");
-	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-	if ((int)url.find(L"https") == 0)
+
+	std::string mstr[MAX_COUNT_THREAD];
+	size_t countOfLinks = ParseJsonLongLink(str, mstr);
+
+	if (countOfLinks == 0)
 	{
-		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+		rs.code = "0";
+		rs.sourceText = "Error read params";
+		free(str);
+		free(strUrl);
+		return true;
 	}
 
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, s.GetString());
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, s.GetLength());
-
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK)
-		rs.sourceText = curl_easy_strerror(res);
-	else
+	MemoryStruct* mchunk = (MemoryStruct*)malloc(countOfLinks * sizeof (* mchunk));
+	
+	for (size_t i = 0; i < countOfLinks; ++i)
 	{
-		rs.sourceText = chunk.memory;
-		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-		rs.code = std::to_string(response_code);
+		mchunk[i].memory = (char*)malloc(1);
+		mchunk[i].size = 0;
 	}
 
-	MyHandler handler;
-	rapidjson::Reader reader;
-	rapidjson::StringStream ss(chunk.memory);
-	reader.IterativeParseInit();
-	bool flag = false;
-	while (!reader.IterativeParseComplete()) {
-		reader.IterativeParseNext<rapidjson::kParseDefaultFlags>(ss, handler);
-		if (flag)
+	for (size_t i = 0; i < countOfLinks; ++i)
+	{
+
+		mstr[i] = GetJsonShortLink(mstr[i].c_str());
+
+		curl_easy_setopt(mcurl[i], CURLOPT_URL, strUrl);
+
+		curl_easy_setopt(mcurl[i], CURLOPT_HTTPHEADER, headers);
+
+		if ((int)url.find(L"https") == 0)
 		{
-			if (handler.data.length() > 0)
-				rs.text = handler.data;
-			break;
+			curl_easy_setopt(mcurl[i], CURLOPT_SSL_VERIFYPEER, 0L);
+			curl_easy_setopt(mcurl[i], CURLOPT_SSL_VERIFYHOST, 0L);
 		}
-		if (strcmp(handler.type, "Key:") == 0 && handler.data.compare("shortLink") == 0) flag = true;
+
+		curl_easy_setopt(mcurl[i], CURLOPT_POSTFIELDS, mstr[i].c_str());
+		curl_easy_setopt(mcurl[i], CURLOPT_POSTFIELDSIZE, mstr[i].length());
+
+		curl_easy_setopt(mcurl[i], CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+		curl_easy_setopt(mcurl[i], CURLOPT_WRITEDATA, (void*)& mchunk[i]);
 	}
 
-	TV_VT(rez) = VTYPE_I8;
-	TV_I8(rez) = response_code;
+	CURLM* multi_handle = curl_multi_init();
 
-	free(chunk.memory);
+	for (size_t i = 0; i < countOfLinks; ++i)
+	{
+		curl_multi_add_handle(multi_handle, mcurl[i]);
+	}
+
+	int still_running = 0;
+
+	curl_multi_perform(multi_handle, &still_running);
+
+	while (still_running)
+	{
+		Sleep(100);
+		curl_multi_perform(multi_handle, &still_running);
+	}
+
+	int msgq = 0;
+	CURLcode res;
+	std::string mError[MAX_COUNT_THREAD];
+
+	for (size_t i = 0; i < countOfLinks; ++i)
+	{
+		res = curl_easy_getinfo(mcurl[i], CURLINFO_HTTP_CODE, &msgq);
+		if (res != CURLE_OK)
+		{
+			mError[i] = curl_easy_strerror(res);
+		}
+		else if (msgq != 200)
+		{			
+			mError[i] = std::to_string(msgq);
+		}
+	}
+
+	curl_multi_cleanup(multi_handle);
+
+	ParseRequestMShortLink(mchunk, mError, countOfLinks);
+
+	for (size_t i = 0; i < countOfLinks; ++i)
+	{
+		free(mchunk[i].memory);
+	}
+	
+	free(mchunk);
+
+	TV_VT(rez) = VTYPE_INT;
+	TV_INT(rez) = response_code;
+
 	free(str);
 	free(strUrl);
 
@@ -916,7 +943,7 @@ void SMSAddIn::ParseRequestStatusXML(char *message)
 	try {
 		rapidxml::xml_document<> xml;
 		xml.parse<0>(message);
-
+		
 		rapidxml::xml_node<> *node = xml.first_node("response", 0, false);
 		if (!node) throw 1;
 
@@ -1021,6 +1048,106 @@ void SMSAddIn::ParseRequestCodeVK(char * message)
 		rs.code = "904";
 	}
 
+}
+
+std::string SMSAddIn::ParseRequestShortLink(MemoryStruct chunk)
+{
+	std::string str = "";
+
+	if (chunk.size == 0) return str;
+
+	MyHandler handler;
+	rapidjson::Reader reader;
+	rapidjson::StringStream ss(chunk.memory);
+	reader.IterativeParseInit();
+
+	bool flag = false;
+	while (!reader.IterativeParseComplete()) {
+		reader.IterativeParseNext<rapidjson::kParseDefaultFlags>(ss, handler);
+		
+		if (reader.HasParseError()) return str;
+
+		if (flag)
+		{
+			if (handler.data.length() > 0)
+				str = handler.data;
+			break;
+		}
+		if (strcmp(handler.type, "Key:") == 0 && handler.data.compare("shortLink") == 0) flag = true;
+	}
+
+	return str;
+}
+
+void SMSAddIn::ParseRequestMShortLink(const MemoryStruct * mchunk, std::string mError[], size_t countOfLinks)
+{
+	rs.clear();
+
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> json(s);
+
+	json.StartArray();
+
+	for (size_t i = 0; i < countOfLinks; ++i)
+	{
+		std::string jsonStr = ParseRequestShortLink(mchunk[i]).c_str();
+		if (mError[i].empty() && !jsonStr.empty())
+			json.String(jsonStr.c_str());
+		else
+		{
+			json.StartObject();
+			json.Key("Error");
+			json.String(!jsonStr.empty() ? "Has parse error" : mError[i].c_str());
+			json.EndObject();
+		}
+	}
+
+	json.EndArray();
+
+	rs.text = s.GetString();
+}
+
+size_t SMSAddIn::ParseJsonLongLink(const char * jsonStr, std::string * mstr)
+{
+	size_t countOfLinks = 0;
+
+	MyHandler handler;
+	rapidjson::Reader reader;
+	rapidjson::StringStream ss(jsonStr);
+	reader.IterativeParseInit();
+
+	while (countOfLinks < MAX_COUNT_THREAD && !reader.IterativeParseComplete())
+	{
+		reader.IterativeParseNext<rapidjson::kParseDefaultFlags>(ss, handler);
+		if (strcmp(handler.type, "String:") == 0)
+		{
+			if (handler.data.length() > 0)
+				mstr[countOfLinks++] = handler.data;
+		}
+	}
+
+	return countOfLinks;
+}
+
+std::string SMSAddIn::GetJsonShortLink(const char* url)
+{
+	rapidjson::StringBuffer s;
+	rapidjson::Writer<rapidjson::StringBuffer> json(s);
+
+	json.StartObject();
+
+	json.Key("longDynamicLink");
+	json.String(url);
+
+	json.Key("suffix");
+	json.StartObject();
+	json.Key("option");
+	json.String("SHORT");
+	json.EndObject();
+
+	json.EndObject();
+	
+	return (std::string)s.GetString();
 }
 
 static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp)
