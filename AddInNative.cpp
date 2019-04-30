@@ -673,7 +673,7 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 	}
 
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, str);
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len);
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len - 1);
 
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
@@ -949,7 +949,7 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 	}
 
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, str);
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len);
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, len - 1);
 
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
