@@ -6,7 +6,7 @@
 #include <wtypes.h>
 #endif //__linux__
 
-constexpr size_t MAX_COUNT_THREAD = 100;
+constexpr size_t MAX_COUNT_THREAD = 50;
 
 #include "ComponentBase.h"
 #include "AddInDefBase.h"
@@ -15,6 +15,8 @@ constexpr size_t MAX_COUNT_THREAD = 100;
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <chrono>
+#include <ctime>
 #include <rapidxml/rapidxml.hpp>
 #include <rapidjson/writer.h>
 #include <rapidjson/reader.h>
@@ -91,6 +93,7 @@ public:
 		ePropID,
 		ePropReqExStatus,
 		ePropOrderList,
+		ePropApiKeys,
         eLastProp      // Always last
     };
 
@@ -142,14 +145,19 @@ private:
     // Attributes
 	IAddInDefBase      *m_iConnect;
 	IMemoryManager     *m_iMemory;
+	
+	std::string mApiKeys[MAX_COUNT_THREAD];
+	size_t countKey;
 
-	std::wstring url, login, password, sn, orderList;
+	std::wstring url, login, password, sn, orderList, jApiKeys;
 	RequestStatus rs;
 	int ApiVersion;
+	size_t countReqest;
+	std::chrono::time_point<std::chrono::system_clock> timeStart;
 
 	bool GetDeliveryStatus(const wchar_t*, tVariant*);
 	bool SendSMS(const wchar_t* number, const wchar_t* message, bool Resend, tVariant*);
-	bool GetShortLink(const wchar_t*, tVariant*);
+	bool GetShortLink(const wchar_t *jLongUrls, tVariant*);
 
 	void ParseRequestStatus(char *);
 	void ParseRequestStatusXML(char *);

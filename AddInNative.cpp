@@ -45,7 +45,8 @@ static const wchar_t *g_PropNamesRu[] = {
 	L"Подпись",
 	L"ИД",
 	L"ДополнительныйСтатус",
-	L"ПорядокОтправки"
+	L"ПорядокОтправки",
+	L"КлючиAPI"
 };
 
 static const wchar_t *g_PropNames[] = {
@@ -62,7 +63,8 @@ static const wchar_t *g_PropNames[] = {
 	L"SN",
 	L"ID",
 	L"ExtendedStatus",
-	L"OrderList"
+	L"OrderList",
+	L"ApiKeys"
 };
 
 //---------------------------------------------------------------------------//
@@ -105,8 +107,13 @@ SMSAddIn::SMSAddIn()
 	orderList = L"V,S";
 	rs.clear();
 	ApiVersion = 1;
+	countKey = 0;
+
+	countReqest = 0;
+	timeStart = std::chrono::system_clock::now();
+
 	curl_global_init(CURL_GLOBAL_ALL);
-	curl = curl_easy_init();
+	curl = curl_easy_init();	
 
 	for (size_t i = 0; i < MAX_COUNT_THREAD; ++i)
 	{
@@ -234,6 +241,9 @@ bool SMSAddIn::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 	case ePropOrderList:
 		wStr = &orderList;
 		break;
+	case ePropApiKeys:
+		wStr = &jApiKeys;
+		break;
 	case ePropReqDate:
 		Str = &rs.date;
 		break;
@@ -315,6 +325,19 @@ bool SMSAddIn::SetPropVal(const long lPropNum, tVariant* varPropVal)
 			return false;
 		sn = TV_WSTR(varPropVal);
 		break;
+	case ePropApiKeys:
+	{
+		if (TV_VT(varPropVal) != VTYPE_PWSTR)
+			return false;
+		jApiKeys = TV_WSTR(varPropVal);
+
+		size_t lenApiKeys = 0;
+		char* strApiKeys = convWcharToChar(&lenApiKeys, jApiKeys.c_str());
+		if (!strApiKeys) return false;
+		countKey = ParseJsonLongLink(strApiKeys, mApiKeys);
+		free(strApiKeys);
+		break; 
+	}
 	case ePropApiVersion:
 		if (TV_VT(varPropVal) != VTYPE_I4)
 			return false;
@@ -350,6 +373,7 @@ bool SMSAddIn::IsPropWritable(const long lPropNum)
 	case ePropApiVersion:
 	case ePropSN:
 	case ePropOrderList:
+	case ePropApiKeys:
 		return true;
 	default:
 		return false;
@@ -418,6 +442,8 @@ long SMSAddIn::GetNParams(const long lMethodNum)
 	switch (lMethodNum)
 	{
 	case eMethGetDeliveryStatus:
+		rez = 1;
+		break;
 	case eMethGetShortLink:
 		rez = 1;
 		break;
@@ -479,8 +505,9 @@ bool SMSAddIn::CallAsFunc(const long lMethodNum,
 			rez = GetDeliveryStatus(TV_WSTR(paParams), pvarRetValue);
 		break;
 	case eMethGetShortLink:
-		if (TV_VT(paParams) == VTYPE_PWSTR && paParams[0].wstrLen > 0)
-			rez = GetShortLink(TV_WSTR(paParams), pvarRetValue);
+		if (lSizeArray == 1
+			&& TV_VT(&paParams[0]) == VTYPE_PWSTR && paParams[0].wstrLen > 0)
+			rez = GetShortLink(TV_WSTR(&paParams[0]), pvarRetValue);
 		break;
 	case eMethSendSMS:
 		if (lSizeArray == 3
@@ -690,7 +717,7 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 	return true;
 }
 
-bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
+bool SMSAddIn::GetShortLink(const wchar_t *jLongUrls, tVariant *rez)
 {
 	rs.clear();
 
@@ -704,8 +731,29 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 	std::setlocale(LC_ALL, "ru_RU.utf8");
 
 	size_t len = 0 , lenUrl = 0;
-	char* str = convWcharToChar(&len, longUrl);
+	char* str = convWcharToChar(&len, jLongUrls);
+	if (!str) return false;
+
 	char* strUrl = convWcharToChar(&lenUrl, url.c_str());
+	if (!strUrl) return false;
+
+	char** mStrUrl = (char**) malloc(countKey == 0 ? 1 : countKey * sizeof(mStrUrl));
+	if (!mStrUrl) return false;
+
+	for (size_t s = 0; s < countKey == 0 ? 0 : countKey - 1; ++s)
+	{
+		std::string t = "";
+		t.append(strUrl);
+		if (countKey > 0)
+		{
+			t.append("?key=").append(mApiKeys[s]);
+		}
+
+		mStrUrl[s] = (char*)malloc(t.length() * sizeof(mStrUrl[s]));
+		if (!mStrUrl[s]) return false;
+		strcpy_s(mStrUrl[s], t.length() + 1, t.c_str());
+
+	}
 
 	long response_code = 200;
 
@@ -713,15 +761,33 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 	headers = curl_slist_append(headers, "Accept: application/json");
 	headers = curl_slist_append(headers, "Content-Type: application/json");
 	headers = curl_slist_append(headers, "charsets: utf-8");
-
-
+	
 	std::string mstr[MAX_COUNT_THREAD];
 	size_t countOfLinks = ParseJsonLongLink(str, mstr);
+
+	countReqest += countOfLinks;
+
+	if (countReqest >= MAX_COUNT_THREAD)
+	{
+		std::chrono::duration<double> elapsed_seconds = std::chrono::system_clock::now() - timeStart;
+		int ms = (int)(1000 - elapsed_seconds.count() * 1000);
+		if (ms > 0 && ms <= 1000)
+			Sleep(ms);
+
+		countReqest = 0;
+	}
+
+	timeStart = std::chrono::system_clock::now();
 
 	if (countOfLinks == 0)
 	{
 		rs.code = "0";
 		rs.sourceText = "Error read params";
+
+		for (size_t s = 0; s < countKey == 0 ? 0 : countKey - 1; ++s)
+			free(mStrUrl[s]);
+		free(mStrUrl);
+
 		free(str);
 		free(strUrl);
 		return true;
@@ -735,12 +801,16 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 		mchunk[i].size = 0;
 	}
 
+	int ct = 0;
 	for (size_t i = 0; i < countOfLinks; ++i)
 	{
 
 		mstr[i] = GetJsonShortLink(mstr[i].c_str());
 
-		curl_easy_setopt(mcurl[i], CURLOPT_URL, strUrl);
+		if (ct == 0) ct = countKey == 0 ? 1 : countKey;
+		curl_easy_setopt(mcurl[i], CURLOPT_URL, mStrUrl[--ct]);
+		
+		//curl_easy_setopt(mcurl[i], CURLOPT_URL, strUrl);
 
 		curl_easy_setopt(mcurl[i], CURLOPT_HTTPHEADER, headers);
 
@@ -786,8 +856,10 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 			mError[i] = curl_easy_strerror(res);
 		}
 		else if (msgq != 200)
-		{			
+		{	
 			mError[i] = std::to_string(msgq);
+			//if (mchunk[i].size > 0)
+			//	mError[i].append(" (").append(mchunk[i].memory).append(")");
 		}
 	}
 
@@ -795,16 +867,20 @@ bool SMSAddIn::GetShortLink(const wchar_t *longUrl, tVariant *rez)
 
 	ParseRequestMShortLink(mchunk, mError, countOfLinks);
 
+	TV_VT(rez) = VTYPE_INT;
+	TV_INT(rez) = response_code;
+
 	for (size_t i = 0; i < countOfLinks; ++i)
 	{
 		free(mchunk[i].memory);
 	}
-	
+
 	free(mchunk);
 
-	TV_VT(rez) = VTYPE_INT;
-	TV_INT(rez) = response_code;
+	for (size_t s = 0; s < countKey == 0 ? 0 : countKey - 1; ++s)
+		free(mStrUrl[s]);
 
+	free(mStrUrl);
 	free(str);
 	free(strUrl);
 
