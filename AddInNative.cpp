@@ -46,7 +46,9 @@ static const wchar_t *g_PropNamesRu[] = {
 	L"ИД",
 	L"ДополнительныйСтатус",
 	L"ПорядокОтправки",
-	L"КлючиAPI"
+	L"КлючиAPI",
+	L"Длительность",
+	L"DTMF_Коды"
 };
 
 static const wchar_t *g_PropNames[] = {
@@ -64,7 +66,9 @@ static const wchar_t *g_PropNames[] = {
 	L"ID",
 	L"ExtendedStatus",
 	L"OrderList",
-	L"ApiKeys"
+	L"ApiKeys",
+	L"Duration",
+	L"DTMF_Codes"
 };
 
 //---------------------------------------------------------------------------//
@@ -106,7 +110,7 @@ SMSAddIn::SMSAddIn()
 	password = L"";
 	orderList = L"V,S";
 	rs.clear();
-	ApiVersion = 1;
+	ApiVersion = VersionAPI::eSMS_Viber;
 	countKey = 0;
 
 	countReqest = 0;
@@ -238,6 +242,12 @@ bool SMSAddIn::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 	case ePropPassword:
 		wStr = &password;
 		break;
+	case ePropDuration:
+		num = rs.duration;
+		break;
+	case ePropDTMF_Codes:
+		Str = &rs.dtmf_codes;
+		break;
 	case ePropOrderList:
 		wStr = &orderList;
 		break;
@@ -341,8 +351,8 @@ bool SMSAddIn::SetPropVal(const long lPropNum, tVariant* varPropVal)
 	case ePropApiVersion:
 		if (TV_VT(varPropVal) != VTYPE_I4)
 			return false;
-		ApiVersion = TV_INT(varPropVal);
-		if (ApiVersion <= 0 || ApiVersion > 2) ApiVersion = 1;
+		ApiVersion = static_cast<VersionAPI>TV_INT(varPropVal);
+		if (ApiVersion < 1 || ApiVersion >= VersionAPI::eLastVersionAPI) ApiVersion = VersionAPI::eSMS_Viber;
 		break;
 	default:
 		return false;
@@ -619,7 +629,7 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 {
 	rs.clear();
 
-	if (url.empty() || sn.empty() || !curl || ((login.empty() || password.empty() || orderList.empty()) && ApiVersion == 2))
+	if (url.empty() || (sn.empty() && ApiVersion != VersionAPI::eIVR) || !curl || ((login.empty() || password.empty() || orderList.empty()) && ApiVersion == VersionAPI::eVK))
 	{
 		rs.code = "901";
 		rs.sourceText = "Не установлены параметры";
@@ -634,23 +644,36 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 
 	std::wstring wstr = L"";
 
+	auto timeCur = std::chrono::system_clock::now();
+	timeCur.operator += (std::chrono::hours(2));
+	auto in_time_t = std::chrono::system_clock::to_time_t(timeCur);
+
+	std::wstring strTime(60, '\0');
+	std::wcsftime(&strTime[0], strTime.size(), L"%Y%m%d%H%M%S", std::localtime(&in_time_t));
+
 	switch (ApiVersion)
 	{
-	case 1: //Отправка вайбер и СМС
+	case VersionAPI::eSMS_Viber: //Отправка вайбер и СМС
 		wstr.append(L"type=text&sn=").append(sn).
 			append(L"&msisdn=").append(number).
-			append(L"&resend_by_sms=").append(Resend ? L"Y" : L"N").
+			append(L"&resend_by_sms=").append(Resend ? L"S" : L"N").
+			append(L"&validity_period=").append(strTime.c_str()).
 			append(L"&message=").append(message);
-		break;
-	case 2: //Отправка вконтакте, вайбер и СМС
+		break; 
+	case VersionAPI::eVK: //Отправка вконтакте, вайбер и СМС
 		wstr.append(L"order_list=").append(orderList).
 			append(L"&serviceid=").append(login).
 			append(L"&pass=").append(password).
 			append(L"&message=").append(message).
 			append(L"&clientId=").append(number).
 			append(L"&v_resendCond=").append(Resend ? L"S" : L"N").
-			append(L"&i_resendCond=Y&v_resendValid=000000020000000R&i_resendValid=000000020000000R").
+			append(L"&i_resendCond=S&v_resendValid=000000010000000R&i_resendValid=000000020000000R").
 			append(L"&sn=").append(sn);
+		break;
+	case VersionAPI::eIVR: //Голосовое информирование
+		wstr.append(L"retry_count=1&retry_interval=1").
+			append(L"&msisdn=").append(number).
+			append(L"&text=").append(message);
 		break;
 	default:
 		free(chunk.memory);
@@ -688,11 +711,14 @@ bool SMSAddIn::SendSMS(const wchar_t *number, const wchar_t *message, bool Resen
 	if (chunk.size > 0)
 	switch (ApiVersion)
 	{
-	case 1:
+	case VersionAPI::eSMS_Viber:
 		ParseRequestCode(chunk.memory);
 		break;
-	case 2:
+	case VersionAPI::eVK:
 		ParseRequestCodeVK(chunk.memory);
+		break;
+	case VersionAPI::eIVR:
+		ParseRequestCodeIVR(chunk.memory);
 		break;
 	default:
 		break;
@@ -906,7 +932,7 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 {
 	rs.clear();
 
-	if (url.empty() || !curl || ((login.empty() || password.empty()) && ApiVersion == 2))
+	if (url.empty() || !curl || ((login.empty() || password.empty()) && ApiVersion == VersionAPI::eVK))
 	{		
 		rs.code = "901";
 		rs.sourceText = "Не установлены параметры";
@@ -922,11 +948,14 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 
 	switch (ApiVersion)
 	{
-	case 1: //Проверка статуса вайбер и СМС
+	case VersionAPI::eSMS_Viber: //Проверка статуса вайбер и СМС
 		wstr.append(L"show_date=Y&mt_num=").append(message);
 		break;
-	case 2: //Проверка статуса вконтакте, вайбер и СМС
+	case VersionAPI::eVK: //Проверка статуса вконтакте, вайбер и СМС
 		wstr.append(L"serviceid=").append(login).append(L"&pass=").append(password).append(L"&id=").append(message);
+		break;
+	case VersionAPI::eIVR: //Проверка статуса голосового оповещения
+		wstr.append(L"request_id=").append(message);
 		break;
 	default:
 		free(chunk.memory);
@@ -961,11 +990,14 @@ bool SMSAddIn::GetDeliveryStatus(const wchar_t *message, tVariant* rez)
 	if (chunk.size > 0)
 	switch (ApiVersion)
 	{
-	case 1:
+	case VersionAPI::eSMS_Viber:
 		ParseRequestStatus(chunk.memory);
 		break;
-	case 2:
+	case VersionAPI::eVK:
 		ParseRequestStatusXML(chunk.memory);
+		break;
+	case VersionAPI::eIVR:
+		ParseRequestStatusIVR(chunk.memory);
 		break;
 	default:
 		break;
@@ -1065,6 +1097,62 @@ void SMSAddIn::ParseRequestStatusXML(char *message)
 	}
 }
 
+void SMSAddIn::ParseRequestStatusIVR(char* message)
+{
+	rs.clear();
+	rs.sourceText = message;
+
+	try {
+		rapidxml::xml_document<> xml;
+		xml.parse<0>(message);
+
+		rapidxml::xml_node<>* node = xml.first_node("response", 0, false);
+		if (!node) throw 1;
+
+		rapidxml::xml_node<>* attr = node->first_node("status", 0, false);
+		if (!attr) throw 1;
+
+		if (strcmp(attr->value(), "Error") == 0)
+		{
+			attr = node->first_node("error_code", 0, false);
+			if (!attr) throw 1;
+			rs.code = attr->value();
+
+			attr = node->first_node("error", 0, false);
+			if (!attr) throw 1;
+			rs.text = attr->value();
+
+			rs.status = 1;
+		}
+		else
+		{
+			attr = node->first_node("call_time", 0, false);
+			if (!attr) throw 1;
+			rs.date = attr->value();
+
+			attr = node->first_node("dtmf_codes", 0, false);
+			if (!attr) throw 1;
+			rs.dtmf_codes = attr->value();
+			
+			attr = node->first_node("duration", 0, false);
+			if (!attr) throw 1;
+			rs.duration = atoi(attr->value());
+
+			rs.code = "200";
+
+			rs.status = 3;
+		}
+	}
+	catch (int)
+	{
+		rs.code = "905";
+	}
+	catch (rapidxml::parse_error parseErr)
+	{
+		rs.code = "906";
+	}
+}
+
 void SMSAddIn::ParseRequestCode(char * message)
 {
 	rs.clear();
@@ -1124,6 +1212,49 @@ void SMSAddIn::ParseRequestCodeVK(char * message)
 		rs.code = "904";
 	}
 
+}
+
+void SMSAddIn::ParseRequestCodeIVR(char* message)
+{
+	rs.clear();
+	rs.sourceText = message;
+
+	try {
+		rapidxml::xml_document<> xml;
+		xml.parse<0>(message);
+
+		rapidxml::xml_node<>* node = xml.first_node("response", 0, false);
+		if (!node) throw 1;
+
+		rapidxml::xml_node<>* attr = node->first_node("result", 0, false);
+		if (!attr) throw 1;
+
+		rs.text = attr->value();
+
+		if (rs.text == "false")
+		{
+			attr = node->first_node("error", 0, false);
+			if (!attr) throw 1;
+
+			rs.text = attr->value();
+		}
+		else
+		{
+			attr = node->first_node("id", 0, false);
+			if (!attr) throw 1;
+
+			rs.id = attr->value();
+		}
+		rs.code = "200";
+	}
+	catch (int)
+	{
+		rs.code = "905";
+	}
+	catch (rapidxml::parse_error parseErr)
+	{
+		rs.code = "906";
+	}
 }
 
 std::string SMSAddIn::ParseRequestShortLink(MemoryStruct chunk)

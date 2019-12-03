@@ -32,6 +32,8 @@ struct RequestStatus {
 	std::string messageType;
 	std::string sourceText;
 	std::string id;
+	int duration;
+	std::string dtmf_codes;
 
 	void clear(void)
 	{
@@ -41,6 +43,8 @@ struct RequestStatus {
 		messageType.clear();
 		sourceText.clear();
 		id.clear();
+		duration = 0;
+		dtmf_codes.clear();
 		status = 0;
 		exstatus = 0;
 	}
@@ -94,6 +98,8 @@ public:
 		ePropReqExStatus,
 		ePropOrderList,
 		ePropApiKeys,
+		ePropDuration,
+		ePropDTMF_Codes,
         eLastProp      // Always last
     };
 
@@ -104,6 +110,14 @@ public:
 		eMethGetShortLink,
         eLastMethod      // Always last
     };
+
+	enum VersionAPI
+	{
+		eSMS_Viber = 1,
+		eVK,
+		eIVR,
+		eLastVersionAPI
+	};
 
     SMSAddIn(void);
     virtual ~SMSAddIn();
@@ -151,7 +165,7 @@ private:
 
 	std::wstring url, login, password, sn, orderList, jApiKeys;
 	RequestStatus rs;
-	int ApiVersion;
+	VersionAPI ApiVersion;
 	size_t countReqest;
 	std::chrono::time_point<std::chrono::system_clock> timeStart;
 
@@ -162,8 +176,12 @@ private:
 	void ParseRequestStatus(char *);
 	void ParseRequestStatusXML(char *);
 
+	void ParseRequestStatusIVR(char* message);
+
 	void ParseRequestCode(char *);
 	void ParseRequestCodeVK(char *);
+
+	void ParseRequestCodeIVR(char* message);
 
 	std::string ParseRequestShortLink(MemoryStruct);
 	void ParseRequestMShortLink(const MemoryStruct*, std::string[], size_t);
